@@ -92,8 +92,7 @@ class ShortestPathWithSTP(app_manager.RyuApp):
 
 
         if src in self.mac_to_port[dpid] and self.mac_to_port[dpid][src] != in_port:
-            
-            if haddr_bitand(dst, self.multicast_mask) == self.multicast_mask or dst == "ff:ff:ff:ff:ff:ff":
+            if haddr_bitand(haddr_to_bin(dst), self.multicast_mask) == self.multicast_mask or dst == "ff:ff:ff:ff:ff:ff":
                 #add flow to prevent broadcast/multicast traffic from this source on this port
                 actions = [];
                 #install the flow with high priority
