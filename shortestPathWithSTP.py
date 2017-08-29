@@ -7,11 +7,8 @@ from ryu.controller import ofp_event
 from ryu.controller.handler import MAIN_DISPATCHER, CONFIG_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
-from ryu.lib.mac import haddr_to_bin
-from ryu.lib.mac import haddr_bitand
-from ryu.lib.packet import packet
-from ryu.lib.packet import ethernet
-from ryu.lib.packet import ether_types
+from ryu.lib.mac import haddr_to_bin, haddr_bitand, haddr_to_str
+from ryu.lib.packet import packet, ethernet, ether_types
 from ryu.topology import event, switches
 from ryu.topology.api import get_switch, get_link
 import networkx as nx
@@ -92,14 +89,14 @@ class ShortestPathWithSTP(app_manager.RyuApp):
 
 
         if src in self.mac_to_port[dpid] and self.mac_to_port[dpid][src] != in_port:
-            if haddr_bitand(haddr_to_bin(dst), self.multicast_mask) == self.multicast_mask or dst == "ff:ff:ff:ff:ff:ff":
+            if haddr_bitand(haddr_to_bin(dst), self.multicast_mask) == self.multicast_mask:
                 #add flow to prevent broadcast/multicast traffic from this source on this port
                 actions = [];
                 #install the flow with high priority
-                match = parser.OFPMatch(in_port=in_port, eth_src=src, eth_dst=dst)
-                #match.append_field(ofproto.OXM_OF_ETH_DST, multicast_mask, multicast_mask)
+                #using a tuple for eth_dst creates a masked match field for dst
+                mask = haddr_to_str(self.multicast_mask)
+                match = parser.OFPMatch(in_port=in_port, eth_src=src, eth_dst=(mask, mask))
                 self.add_flow(datapath, 1024, match, actions)
-
 
         else:
             self.mac_to_port[dpid][src] = in_port
