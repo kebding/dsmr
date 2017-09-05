@@ -125,10 +125,6 @@ class ShortestPathWithSTP(app_manager.RyuApp):
                     if dpid in path and path[-1] == dst:
                         nextHop = path[path.index(dpid) + 1]
                         out_port = self.net[dpid][nextHop]['port']
-                        print("found pre-computed path from %s to %s" \
-                                 %(src, dst))
-                        print("dpid = %s, NH = %s, out_port = %s" %(dpid, nextHop, out_port))
-                        print("path = %s" % str(path))
                         break
 
         #else, if dest is in the graph compute the shortest path
