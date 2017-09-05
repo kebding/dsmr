@@ -21,7 +21,7 @@ class ShortestPathWithSTP(app_manager.RyuApp):
         self.topology_api_app = self
         self.net=nx.DiGraph()
         self.mac_to_port = {}
-        self.multicast_mask = '\x01\x00\x00\x00\x00\x00'
+        self.mcast_mask = '\x01\x00\x00\x00\x00\x00'
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -89,12 +89,12 @@ class ShortestPathWithSTP(app_manager.RyuApp):
 
 
         if src in self.mac_to_port[dpid] and self.mac_to_port[dpid][src] != in_port:
-            if haddr_bitand(haddr_to_bin(dst), self.multicast_mask) == self.multicast_mask:
+            if haddr_bitand(haddr_to_bin(dst), self.mcast_mask) == self.mcast_mask:
                 #add flow to prevent broadcast/multicast traffic from this source on this port
                 actions = [];
                 #install the flow with high priority
                 #using a tuple for eth_dst creates a masked match field for dst
-                mask = haddr_to_str(self.multicast_mask)
+                mask = haddr_to_str(self.mcast_mask)
                 match = parser.OFPMatch(in_port=in_port, eth_src=src, eth_dst=(mask, mask))
                 self.add_flow(datapath, 1024, match, actions)
 
@@ -113,14 +113,14 @@ class ShortestPathWithSTP(app_manager.RyuApp):
         if dst in self.net:
             # try routing. if no route found, flood it
             try:
-                path = nx.shortest_path(self.net, src, dst)
+                path = nx.shortest_path(self.net, dpid, dst)
                 nextHop = path[path.index(dpid) + 1]
                 out_port = self.net[dpid][nextHop]['port']
                 self.logger.info("path found from %s to %s. path = %s", \
-                        src, dst, ''.join(str(foo)+' ' for foo in path))
+                        dpid, dst, ''.join(str(foo)+' ' for foo in path))
             except nx.NetworkXNoPath:
                 self.logger.info("no path found from %s to %s. flooding", \
-                        src, dst)
+                        dpid, dst)
                 out_port = ofproto.OFPP_FLOOD
         else:
             out_port = ofproto.OFPP_FLOOD
