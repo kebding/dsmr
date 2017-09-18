@@ -7,7 +7,6 @@ from ryu.controller import ofp_event
 from ryu.controller.handler import MAIN_DISPATCHER, CONFIG_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
-from ryu.lib.mac import haddr_to_bin, haddr_bitand, haddr_to_str
 from ryu.lib.packet import packet, ethernet, ether_types
 from ryu.topology import event, switches
 from ryu.topology.api import get_switch, get_link
@@ -21,7 +20,7 @@ class ShortestPathWithSTP(app_manager.RyuApp):
         self.topology_api_app = self
         self.net=nx.DiGraph()
         self.mac_to_port = {}
-        self.mcast_mask = '\x01\x00\x00\x00\x00\x00'
+        self.mcast_mask = '01:00:00:00:00:00'
         self.paths = {} # a dict that will have a list of paths to each dst
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
@@ -85,32 +84,30 @@ class ShortestPathWithSTP(app_manager.RyuApp):
         self.mac_to_port.setdefault(dpid, {})
 
         # log packet if dst is not IPv6 multicast
+        '''
         if dst[0:6] != "33:33:":
             self.logger.info("packet in %s %s %s %s", dpid, src, dst, in_port)
+        '''
 
         if src not in self.mac_to_port[dpid]:
             self.mac_to_port[dpid][src] = in_port
-            if haddr_bitand(haddr_to_bin(dst), self.mcast_mask) == self.mcast_mask:
-                print("block 1")
-                #if this is the first time receiving a packet from the source and it's a
-                #multicast/broadcast, add a flow with high priority to flood multicast
-                #traffic from the src on this port
-                out_port = ofproto.OFPP_FLOOD
-                actions = [parser.OFPActionOutput(out_port)]
-                mask = haddr_to_str(self.mcast_mask)
-                match = parser.OFPMatch(in_port=in_port, eth_src=src, eth_dst=(mask, mask))
-                self.add_flow(datapath, 1024, match, actions)
+            #if this is the first time receiving a packet from the source,
+            #add a flow with high priority to flood multicast traffic from 
+            #this src on this port
+            out_port = ofproto.OFPP_FLOOD
+            actions = [parser.OFPActionOutput(out_port)]
+            #using a tuple for eth_dst creates a masked match field for dst
+            match = parser.OFPMatch(in_port=in_port, eth_src=src, 
+                    eth_dst=(self.mcast_mask, self.mcast_mask))
+            self.add_flow(datapath, 1024, match, actions)
+            
+            #add flow to block multicast traffic on every port to prevent network loops
+            #(this won't block the origin port because it has a lower priority match)
+            blockActions = [];
+            blockMatch = parser.OFPMatch(eth_src=src, 
+                    eth_dst=(self.mcast_mask, self.mcast_mask))
+            self.add_flow(datapath, 8, blockMatch, blockActions)
 
-        if src in self.mac_to_port[dpid] and self.mac_to_port[dpid][src] != in_port:
-            if haddr_bitand(haddr_to_bin(dst), self.mcast_mask) == self.mcast_mask:
-                #add flow to block multicast traffic on this port to prevent network loops
-                actions = [];
-                #using a tuple for eth_dst creates a masked match field for dst
-                mask = haddr_to_str(self.mcast_mask)
-                match = parser.OFPMatch(in_port=in_port, eth_src=src, eth_dst=(mask, mask))
-                self.add_flow(datapath, 4, match, actions)
-
-        # update graph if needed
         if src not in self.net:
             self.net.add_node(src)
             # self.net is a directed graph, so two links are needed
@@ -120,38 +117,50 @@ class ShortestPathWithSTP(app_manager.RyuApp):
         out_port = ofproto.OFPP_FLOOD   #default
         #check if there's already a path to this dest with this dp in it
         if dst in self.paths:
-            for dest, pathList in self.paths.items():
-                for path in pathList:
-                    if dpid in path and path[-1] == dst:
-                        nextHop = path[path.index(dpid) + 1]
-                        out_port = self.net[dpid][nextHop]['port']
-                        break
+            #self.logger.info("dst %s in self.paths", dst)
+            for path in self.paths[dst]:
+                if dpid in path:
+                    nextHop = path[path.index(dpid) + 1]
+                    out_port = self.net[dpid][nextHop]['port']
+                    '''
+                    self.logger.info("pre-computed path found from %s to %s. path = %s", \
+                            dpid, dst, path)
+                    '''
+                    break
 
-        #else, if dest is in the graph compute the shortest path
-        elif dst in self.net:
+        if out_port == ofproto.OFPP_FLOOD and dst in self.net:
+        #if no precomputed path found, try computing a path
+            #self.logger.info("dst %s not in self.paths or no computed path found, but dst in self.net", dst)
             # try routing. if no route found, flood it
             try:
                 path = nx.shortest_path(self.net, dpid, dst)
                 nextHop = path[path.index(dpid) + 1]
                 out_port = self.net[dpid][nextHop]['port']
+                '''
                 self.logger.info("path found from %s to %s. path = %s", \
                         dpid, dst, ''.join(str(foo)+' ' for foo in path))
+                '''
                 #add this path to the paths dict
                 self.paths.setdefault(dst, [])
                 self.paths[dst].append(path)
 
             except nx.NetworkXNoPath:
+                '''
                 self.logger.info("no path found from %s to %s. flooding", \
                         src, dst)
+                '''
                 out_port = ofproto.OFPP_FLOOD
-        else:   #no route found. flood the packet
+        '''
+        if out_port == ofproto.OFPP_FLOOD:   #no route found. flood the packet
+            self.logger.info("dst %s not in self.net or no path found", dst)
             out_port = ofproto.OFPP_FLOOD
+        '''
 
         actions = [parser.OFPActionOutput(out_port)]
 
         # install a flow to avoid packet_in next time (if not flooding)
         if out_port != ofproto.OFPP_FLOOD:
-            match = parser.OFPMatch(in_port=in_port, eth_dst=dst)
+            match = parser.OFPMatch(eth_dst=dst)
             # verify if we have a valid buffer_id, if yes avoid to send both
             # flow_mod & packet_out
             if msg.buffer_id != ofproto.OFP_NO_BUFFER:
@@ -197,11 +206,13 @@ class ShortestPathWithSTP(app_manager.RyuApp):
         self.net.add_edges_from(links)
 
         # print graph for reference
+        '''
         print("graph:")
         for (u, v, p) in self.net.edges(data='port'):
             if p:
                 print(u, v, p)
             else:
                 print(u, v)
+        '''
     # remember to use --observe-links in command line for topology features
     # launch mininet with sudo mn --custom <topoFile> --topo <topo> --controller remote --switch ovsk,protocols=OpenFlow13
