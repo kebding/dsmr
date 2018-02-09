@@ -111,9 +111,16 @@ class ShortestPathWithSTP(app_manager.RyuApp):
         if src not in self.net:
             self.net.add_node(src)
             # self.net is a directed graph, so two links are needed
-            self.net.add_edge(dpid, src, {'port':in_port})
-            self.net.add_edge(src, dpid)
-
+            self.net.add_edges_from([(dpid, src, {'port':in_port}),
+                (src, dpid)])
+            # print graph for reference
+            print("\ngraph:")
+            for (u, v, p) in self.net.edges(data='port'):
+                if p:
+                    print(u, v, p)
+                else:
+                    print(u, v)
+     
         out_port = ofproto.OFPP_FLOOD   #default
         #check if there's already a path to this dest with this dp in it
         if dst in self.paths:
@@ -206,13 +213,11 @@ class ShortestPathWithSTP(app_manager.RyuApp):
         self.net.add_edges_from(links)
 
         # print graph for reference
-        '''
         print("graph:")
         for (u, v, p) in self.net.edges(data='port'):
             if p:
                 print(u, v, p)
             else:
                 print(u, v)
-        '''
     # remember to use --observe-links in command line for topology features
-    # launch mininet with sudo mn --custom <topoFile> --topo <topo> --controller remote --switch ovsk,protocols=OpenFlow13
+    # launch mininet with sudo mn --custom <topoFile> --topo <topo> --controller remote --switch ovsk,protocols=OpenFlow13 --link=tc
