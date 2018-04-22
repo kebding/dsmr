@@ -40,6 +40,16 @@ class ShortestPathWithSTP(app_manager.RyuApp):
         actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
                                           ofproto.OFPCML_NO_BUFFER)]
         self.add_flow(datapath, 0, match, actions)
+        
+    def print_graph(self):
+        # print graph for reference
+        print("graph:")
+        for (u, v, p) in self.net.edges(data='port'):
+            if p:
+                print(u, v, p)
+            else:
+                print(u, v)
+
 
     def add_flow(self, datapath, priority, match, actions, buffer_id=None, idle_timeout=None):
         ofproto = datapath.ofproto
@@ -79,6 +89,10 @@ class ShortestPathWithSTP(app_manager.RyuApp):
         dst = eth.dst
         src = eth.src
 
+        # filter IPv6 broadcasts
+        if dst[0:6] == "33:33:":
+            return
+
         dpid = datapath.id
 
         self.mac_to_port.setdefault(dpid, {})
@@ -114,48 +128,43 @@ class ShortestPathWithSTP(app_manager.RyuApp):
             self.net.add_edges_from([(dpid, src, {'port':in_port}),
                 (src, dpid)])
             # print graph for reference
-            print("\ngraph:")
-            for (u, v, p) in self.net.edges(data='port'):
-                if p:
-                    print(u, v, p)
-                else:
-                    print(u, v)
+            self.print_graph 
      
         out_port = ofproto.OFPP_FLOOD   #default
         #check if there's already a path to this dest with this dp in it
         if dst in self.paths:
-            #self.logger.info("dst %s in self.paths", dst)
+            self.logger.info("dst %s in self.paths", dst)
             for path in self.paths[dst]:
                 if dpid in path:
                     nextHop = path[path.index(dpid) + 1]
                     out_port = self.net[dpid][nextHop]['port']
-                    '''
+                    #'''
                     self.logger.info("pre-computed path found from %s to %s. path = %s", \
                             dpid, dst, path)
-                    '''
+                    #'''
                     break
 
         if out_port == ofproto.OFPP_FLOOD and dst in self.net:
         #if no precomputed path found, try computing a path
-            #self.logger.info("dst %s not in self.paths or no computed path found, but dst in self.net", dst)
+            self.logger.info("dst %s not in self.paths or no computed path found, but dst in self.net", dst)
             # try routing. if no route found, flood it
             try:
                 path = nx.shortest_path(self.net, dpid, dst)
                 nextHop = path[path.index(dpid) + 1]
                 out_port = self.net[dpid][nextHop]['port']
-                '''
+                #'''
                 self.logger.info("path found from %s to %s. path = %s", \
                         dpid, dst, ''.join(str(foo)+' ' for foo in path))
-                '''
+                #'''
                 #add this path to the paths dict
                 self.paths.setdefault(dst, [])
                 self.paths[dst].append(path)
 
             except nx.NetworkXNoPath:
-                '''
+                #'''
                 self.logger.info("no path found from %s to %s. flooding", \
                         src, dst)
-                '''
+                #'''
                 out_port = ofproto.OFPP_FLOOD
         '''
         if out_port == ofproto.OFPP_FLOOD:   #no route found. flood the packet
@@ -203,21 +212,22 @@ class ShortestPathWithSTP(app_manager.RyuApp):
 
     @set_ev_cls(event.EventSwitchEnter)
     def get_topology_data(self, ev):
+        # clear graph for better performance. unknown why this helps.
+        self.net.clear()
+
+        # get switches and links from ryu.topology
         switch_list = get_switch(self.topology_api_app, None)
         switches = [switch.dp.id for switch in switch_list]
         links_list = get_link(self.topology_api_app, None)
         links = [(link.src.dpid, link.dst.dpid, {'port':link.src.port_no})
                 for link in links_list]
 
+        # add switches and links to graph
         self.net.add_nodes_from(switches)
         self.net.add_edges_from(links)
 
-        # print graph for reference
-        print("graph:")
-        for (u, v, p) in self.net.edges(data='port'):
-            if p:
-                print(u, v, p)
-            else:
-                print(u, v)
-    # remember to use --observe-links in command line for topology features
+        self.print_graph()
+
+
+        # remember to use --observe-links in command line for topology features
     # launch mininet with sudo mn --custom <topoFile> --topo <topo> --controller remote --switch ovsk,protocols=OpenFlow13 --link=tc
