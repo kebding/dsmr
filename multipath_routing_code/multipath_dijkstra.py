@@ -7,9 +7,9 @@ This program creates and returns a dictionary storing each destination node in
 a graph as the keys with the values being lists of tuples describing paths from
 the source to the destination. Only the best paths are stored (i.e. paths that
 are worse by every metric than another path will be discarded). Currently, the
-metrics considered are latency and bandwidth. The function is designed to work
+metrics considered are hop count and bandwidth. The function is designed to work
 with networkx graphs.
-The path tuple is (hopCount, bandwidth, nextHop).
+The path tuple is (hopCount, bandwidth, path).
 
 '''
 
@@ -31,12 +31,7 @@ def multipath_dijkstra(G, src):
                 path = path + nodeTup
                 # if the node is the dst, get the NH path
                 if node == dst: 
-                    if len(path) > 1:   # i.e. if src != dst
-                        NH = path[1]
-                    else:   # i.e. if src == dst 
-                        NH = path[0]
-                    # store the metrics and NH in dests, then   
-                    dests[dst].append((hopCount, bw, NH))
+                    dests[dst].append((hopCount, bw, path))
                     continue
                 
                 # check the neighbors of the node; queue undominated neighbors
@@ -53,10 +48,12 @@ def multipath_dijkstra(G, src):
     return dests
 
 if __name__ == "__main__":
+    import sys
+    import networkx as nx
     edgelist = open(sys.argv[1], 'rb')
-    G = nx.read_edgelist(edgelist, nodetype=int, data=(('bw', float),))
+    G = nx.read_edgelist(edgelist, nodetype=int, data=( ('hc', int),('bw', float) ))
     edgelist.close()
-    if sys.argv[2] is not none:
+    if len(sys.argv) > 2 and sys.argv[2] is not None:
         dests = multipath_dijkstra(G, sys.argv[2])
         print(dests)
     else:
