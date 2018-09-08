@@ -7,9 +7,9 @@ Multiprotocol Label-Switching (MPLS).
 
 
 to launch the controller:
-    $ ryu-manager controllerFile.py --observe-links
+    `$ ryu-manager controllerFile.py --observe-links`
 
 to launch Mininet:
-    $ sudo mn --controller remote --custom TopoFile.py --topo TopoName --switch
-ovs,protocols=OpenFlow13 --link=tc
+    `$ sudo mn --controller remote --custom TopoFile.py --topo TopoName --switch
+ovs,protocols=OpenFlow13 --link=tc`
 
