@@ -31,16 +31,10 @@ class square_topo(Topo):
     self.addLink(h4,s4)
     
     
-    self.addLink(s1, s2, bw=30, delay='6ms')
-    self.addLink(s1, s3, bw=10, delay='2ms')
-    self.addLink(s3, s4, bw=15, delay='2ms')
-    self.addLink(s2, s4, bw=12, delay='1ms')
-    '''
-    self.addLink(s1, s2)
-    self.addLink(s1, s3)
-    self.addLink(s3, s4)
-    self.addLink(s2, s4)
-    ''' 
+    self.addLink(s1, s2, bw=30)
+    self.addLink(s1, s3, bw=10)
+    self.addLink(s3, s4, bw=15)
+    self.addLink(s2, s4, bw=12)
 
 def configure():
   topo = square_topo()

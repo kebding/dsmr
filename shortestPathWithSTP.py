@@ -44,11 +44,8 @@ class ShortestPathWithSTP(app_manager.RyuApp):
     def print_graph(self):
         # print graph for reference
         print("graph:")
-        for (u, v, p) in self.net.edges(data='port'):
-            if p:
-                print(u, v, p)
-            else:
-                print(u, v)
+        for edge in self.net.edges():
+            print(edge[0],edge[1],self.net[edge[0]][edge[1]])
 
 
     def add_flow(self, datapath, priority, match, actions, buffer_id=None, idle_timeout=None):
@@ -225,6 +222,20 @@ class ShortestPathWithSTP(app_manager.RyuApp):
         # add switches and links to graph
         self.net.add_nodes_from(switches)
         self.net.add_edges_from(links)
+
+        # get link bandwidth info from file and add it to the graph
+        bw_list = open('bandwidths.edgelist', 'rb')
+        bw_graph = nx.read_edgelist(bw_list, nodetype=int, data=(('bw', float),) )
+        bw_list.close()
+        for edge in bw_graph.edges():
+            if edge in self.net.edges():
+                try:
+                    port01 = self.net[edge[0]][edge[1]]['port']
+                    port10 = self.net[edge[1]][edge[0]]['port']
+                    self.net.add_edge(edge[0],edge[1], {'port': port01, 'bw': bw_graph[edge[0]][edge[1]]['bw']})
+                    self.net.add_edge(edge[1],edge[0], {'port': port10, 'bw': bw_graph[edge[0]][edge[1]]['bw']})
+                except KeyError:
+                    continue
 
         self.print_graph()
 
