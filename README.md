@@ -17,3 +17,5 @@ to launch Mininet:
     `$ sudo mn --controller remote --custom TopoFile.py --topo TopoName --switch
 ovs,protocols=OpenFlow13 --link=tc`
 
+to view flows on a switch:
+    `sudo ovs-ofctl -O OpenFlow13 dump-flows switchName`
