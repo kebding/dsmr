@@ -214,9 +214,17 @@ class ShortestPathWithFloodControl(app_manager.RyuApp):
             self.logger.info("Illegal port state %s %s", port_no, reason)
 
 
+    '''
+    When the topology updates, rebuild the graph. This involves multiple steps:
+        1. delete the existing graph in the controller
+        2. delete all connected switches' flows
+        3. rebuild the graph based on the current links info
+        4. recalculate MPLS labels
+    After this, it should act just as it did on startup.
+    '''
     @set_ev_cls(event.EventSwitchEnter)
     def get_topology_data(self, ev):
-        # clear graph for better performance. unknown why this helps.
+        # clear graph
         self.net.clear()
 
         # get switches and links from ryu.topology
@@ -234,16 +242,21 @@ class ShortestPathWithFloodControl(app_manager.RyuApp):
         bw_list = open('bandwidths.edgelist', 'rb')
         bw_graph = nx.read_edgelist(bw_list, nodetype=int, data=(('bw', float),) )
         bw_list.close()
-        for edge in bw_graph.edges():
-            if edge in self.net.edges():
-                try:
-                    port01 = self.net[edge[0]][edge[1]]['port']
-                    port10 = self.net[edge[1]][edge[0]]['port']
-                    self.net.add_edge(edge[0],edge[1], {'port': port01,
-                        'bw': bw_graph[edge[0]][edge[1]]['bw']})
-                    self.net.add_edge(edge[1],edge[0], {'port': port10,
-                        'bw': bw_graph[edge[0]][edge[1]]['bw']})
-                except KeyError:
-                    continue
+        for edge in self.net.edges():
+            if edge in bw_graph.edges():
+                link_bw = bw_graph[edge[0]][edge[1]]['bw']
+            else:
+                # if the edge is not in the edgelist of known/expected edges,
+                # give it a default bandwidth
+                link_bw = 1
+            try:
+                port01 = self.net[edge[0]][edge[1]]['port']
+                port10 = self.net[edge[1]][edge[0]]['port']
+                self.net.add_edge(edge[0],edge[1], {'port': port01,
+                    'bw': link_bw})
+                self.net.add_edge(edge[1],edge[0], {'port': port10,
+                    'bw': link_bw})
+            except KeyError:
+                continue
 
         self.print_graph()
