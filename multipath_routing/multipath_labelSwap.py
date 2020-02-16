@@ -35,14 +35,15 @@ def compute_MPLS_labels(graph):
 
     # now add labels to each path
     for src, dstsDict in paths.items():
+        label = 0
         for dst, pathsList in dstsDict.items():
             for path in range(len(pathsList)):
                 # if there isn't already a label for the path, assign one
                 if len(paths[src][dst][path]) < 4:
-                    label = path
                     labelTup = (label,)
                     paths[src][dst][path] = \
                             paths[src][dst][path] + labelTup
+                    label += 1
     # now compute the Next Hop Labels (NH Label or NHL)
     # find a path to the NH to get the metrics to it. check the total
     # path metrics to determine if the NH's path is the same as src's path
@@ -51,14 +52,14 @@ def compute_MPLS_labels(graph):
             if src == dst:
                 # assign NHL = label and append NHL to path tuple
                 paths[src][dst][path] += (paths[src][dst][path][3],)
-                break
+                continue
             # else 
             for path in range(len(pathsList)):
                 NH = paths[src][dst][path][2][1]
                 NHL = -1  # placeholder
                 # find matching path in NH's paths list
                 for NHpath in paths[NH][dst]:
-                    if NHpath == paths[src][dst][path][2][1:]:
+                    if NHpath[2] == paths[src][dst][path][2][1:]:
                         NHL = NHpath[3]
                         break
                 if NHL == -1:
@@ -90,10 +91,10 @@ def print_MPLS_labels(paths):
         raise TypeError('input must be a dict')
 
     for node, dstsDict in paths.items():
-        print("for node " +  node +":")
+        print("for node " + str(node) +":")
         for dst, pathsList in dstsDict.items():
             for path in range(len(pathsList)):
-                print("dst: %s, label: %d, NH: %s, NHL: %d, hopCount: %.2f, bw: %.2f" % 
+                print("dst=%s, label=%d, path=%s, NHL=%d, hopCount=%d, bw=%.2f" %
                         (dst, paths[node][dst][path][3], 
                             paths[node][dst][path][2], 
                             paths[node][dst][path][4], 
@@ -105,7 +106,7 @@ def print_MPLS_labels(paths):
 
 if __name__ == "__main__":
     edgelist = open(sys.argv[1], 'rb')
-    G = nx.read_edgelist(edgelist, nodetype=int, data=(('hc', int),('bw', float)))
+    G = nx.read_edgelist(edgelist, nodetype=int, data=(('bw', float),))
     edgelist.close()
     paths = compute_MPLS_labels(G)
     print_MPLS_labels(paths)
