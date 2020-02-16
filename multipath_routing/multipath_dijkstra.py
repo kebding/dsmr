@@ -23,6 +23,8 @@ def multipath_dijkstra(G, src):
         q = [(0, float('inf'), src, ())]
         while q:
             (hopCount, bw, node, path) = heappop(q)
+            if node in path:
+                continue
             # only proceed if the current path at this node is not dominated
             if len(dests[dst]) < 1 or \
                     hopCount < dests[dst][-1][0] or bw > dests[dst][-1][1]:
@@ -45,20 +47,33 @@ def multipath_dijkstra(G, src):
             # else if this path is dominated, pop the next entry from the queue
         # at this point the queue is empty. begin working on the next dst
     # all dsts have been calculated
+
+    # now remove dominated paths that were inserted before the dominating path
+    # was found
+    for paths in dests.values():
+        for path in paths: 
+            for otherPath in paths:
+                if path != otherPath:
+                    if path[0] <= otherPath[0] and path[1] >= otherPath[1]:
+                        paths.remove(otherPath)
+                        
+
     return dests
 
 if __name__ == "__main__":
     import sys
     import networkx as nx
     edgelist = open(sys.argv[1], 'rb')
-    G = nx.read_edgelist(edgelist, nodetype=int, data=( ('hc', int),('bw', float) ))
+    G = nx.read_edgelist(edgelist, nodetype=int, data=( ('bw', float), ))
     edgelist.close()
     if len(sys.argv) > 2 and sys.argv[2] is not None:
-        dests = multipath_dijkstra(G, sys.argv[2])
-        print(dests)
+        paths = multipath_dijkstra(G, sys.argv[2])
+        print(paths)
     else:
+        paths = {}
         for i in G.nodes():
-            dests[i] = multipath_dijkstra(G, i)
-        for item in dests:
-            print(item)
-
+            paths[i] = multipath_dijkstra(G, i)
+        for src, dsts in paths.items():
+            for dst, paths in dsts.items():
+                for path in paths:
+                    print(src, dst, path)
