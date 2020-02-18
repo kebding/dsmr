@@ -17,11 +17,11 @@ from ryu.topology import event, switches
 from ryu.topology.api import get_switch, get_link
 import networkx as nx
 
-class ShortestPathWithFloodControl(app_manager.RyuApp):
+class DsmrController(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
 
     def __init__(self, *args, **kwargs):
-        super(ShortestPathWithFloodControl, self).__init__(*args, **kwargs)
+        super(DsmrController, self).__init__(*args, **kwargs)
         self.topology_api_app = self
         self.net = nx.DiGraph()
         self.mac_to_port = {} # will have key=dpid, val={otherDpid: port}
@@ -223,11 +223,12 @@ class ShortestPathWithFloodControl(app_manager.RyuApp):
     After this, it should act just as it did on startup.
     '''
     @set_ev_cls(event.EventSwitchEnter)
+    @set_ev_cls(event.EventSwitchLeave)
     def get_topology_data(self, ev):
         # clear graph
         self.net.clear()
 
-        # get switches and links from ryu.topology
+        # get active switches and links from ryu.topology
         switch_list = get_switch(self.topology_api_app, None)
         switches = [switch.dp.id for switch in switch_list]
         links_list = get_link(self.topology_api_app, None)
