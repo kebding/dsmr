@@ -67,7 +67,7 @@ def multipath_dijkstra(G, src):
 
 
 
-def compute_MPLS_labels(graph):
+def compute_mpls_labels(graph):
     paths = {}
     for node in graph:
         # multipath_dijkstra returns a dictionary with the destinations as keys and
@@ -111,7 +111,7 @@ def compute_MPLS_labels(graph):
     return paths
 
 
-def get_MPLS_labels(paths, node, dst, maxDelay=float('inf'), minBW=0):
+def get_mpls_labels(paths, node, dst, maxDelay=float('inf'), minBW=0):
     ''' return a tuple (label, NHlabel) for a path from node to dst with
     the specified properties. if no such path could be found, it will return
     a path that doesn't fit those requirements '''
@@ -126,7 +126,7 @@ def get_MPLS_labels(paths, node, dst, maxDelay=float('inf'), minBW=0):
     return None
 
 
-def print_MPLS_labels(paths):
+def print_mpls_labels(paths):
     #print entries
     if type(paths) is not dict:
         raise TypeError('input must be a dict')
@@ -149,5 +149,5 @@ if __name__ == "__main__":
     edgelist = open(sys.argv[1], 'rb')
     G = nx.read_edgelist(edgelist, nodetype=int, data=(('bw', float),))
     edgelist.close()
-    paths = compute_MPLS_labels(G)
-    print_MPLS_labels(paths)
+    paths = compute_mpls_labels(G)
+    print_mpls_labels(paths)

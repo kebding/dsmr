@@ -16,6 +16,8 @@ from ryu.lib.packet import packet, ethernet, ether_types
 from ryu.topology import event, switches
 from ryu.topology.api import get_switch, get_link
 import networkx as nx
+from multipath_labelSwap import compute_mpls_labels, print_mpls_labels
+from time import sleep
 
 class ShortestPathWithFloodControl(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
@@ -27,6 +29,7 @@ class ShortestPathWithFloodControl(app_manager.RyuApp):
         self.mac_to_port = {} # will have key=dpid, val={otherDpid: port}
         self.mcast_mask = '01:00:00:00:00:00'
         self.paths = {} # will have key=dst, val=[list of paths to dst]
+        self.labels = {}    # will contain info on mpls labels
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -52,6 +55,9 @@ class ShortestPathWithFloodControl(app_manager.RyuApp):
         for edge in self.net.edges():
             print(edge[0],edge[1],self.net[edge[0]][edge[1]])
 
+    def print_labels(self):
+        # print labels for reference
+        print_mpls_labels(self.labels)
 
     def add_flow(self, datapath, priority, match, actions, buffer_id=None, idle_timeout=None):
         ofproto = datapath.ofproto
@@ -72,7 +78,13 @@ class ShortestPathWithFloodControl(app_manager.RyuApp):
                                     match=match, instructions=inst)
         datapath.send_msg(mod)
 
-
+    def remove_all_flows(self, datapath):
+        parser = datapath.ofproto_parser
+        match_all = parser.OFPMatch()
+        instructions = []
+        delete_flows_mod = datapath.ofproto_parser.OFPFlowMod(datapath=datapath,
+                table_id=0, match=match_all, instructions=instructions)
+        datapath.send_msg(delete_flows_mod)
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
@@ -219,13 +231,16 @@ class ShortestPathWithFloodControl(app_manager.RyuApp):
         1. delete the existing graph in the controller
         2. delete all connected switches' flows
         3. rebuild the graph based on the current links info
-        4. recalculate MPLS labels
+        4. recalculate mpls labels
     After this, it should act just as it did on startup.
     '''
     @set_ev_cls(event.EventSwitchEnter)
     def get_topology_data(self, ev):
         # clear graph
         self.net.clear()
+
+        # wait a moment for ryu's topology info to update
+        sleep(0.005)
 
         # get switches and links from ryu.topology
         switch_list = get_switch(self.topology_api_app, None)
@@ -234,21 +249,36 @@ class ShortestPathWithFloodControl(app_manager.RyuApp):
         links = [(link.src.dpid, link.dst.dpid, {'port':link.src.port_no})
                 for link in links_list]
 
+        # remove all the flows in the switches
+        '''
+        for switch in switch_list:
+            self.remove_all_flows(switch.dp)
+        '''
+
         # add switches and links to graph
         self.net.add_nodes_from(switches)
         self.net.add_edges_from(links)
-
+        #self.logger.info("switches: %s", str(switches))
+        #self.logger.info("links: %s", str(links))
         # get link bandwidth info from file and add it to the graph
         bw_list = open('bandwidths.edgelist', 'rb')
         bw_graph = nx.read_edgelist(bw_list, nodetype=int, data=(('bw', float),) )
         bw_list.close()
-        for edge in self.net.edges():
-            if edge in bw_graph.edges():
-                link_bw = bw_graph[edge[0]][edge[1]]['bw']
-            else:
-                # if the edge is not in the edgelist of known/expected edges,
-                # give it a default bandwidth
-                link_bw = 1
+        #self.logger.info("bw_graph.edges(): %s", str(bw_graph.edges()))
+
+        for edge in bw_graph.edges(): # .edges() only returns ends, not data
+            #self.logger.info("edge = %s", str(edge))
+            # if the edge is not in the edgelist of known/expected edges or
+            # the bw field for the edge is missing, use a default bandwidth
+            link_bw = 1
+            if edge in self.net.edges():
+                #self.logger.info("edge %s in self.net.edges()", str(edge))
+                try:
+                    link_bw = bw_graph[edge[0]][edge[1]]['bw']
+                    #self.logger.info("link_bw = %f", link_bw)
+                except:
+                    #self.logger.info("no link_bw found")
+                    pass
             try:
                 port01 = self.net[edge[0]][edge[1]]['port']
                 port10 = self.net[edge[1]][edge[0]]['port']
@@ -257,6 +287,13 @@ class ShortestPathWithFloodControl(app_manager.RyuApp):
                 self.net.add_edge(edge[1],edge[0], {'port': port10,
                     'bw': link_bw})
             except KeyError:
+                #self.logger.info("KeyError for edge %s", str(edge))
                 continue
 
+        # calculate labels
+        #self.logger.info("calculating labels")
+        self.labels = compute_mpls_labels(self.net)
+
         self.print_graph()
+        self.print_labels()
+        print("")
