@@ -19,11 +19,11 @@ import networkx as nx
 from multipath_labelSwap import compute_mpls_labels, print_mpls_labels
 from time import sleep
 
-class ShortestPathWithFloodControl(app_manager.RyuApp):
+class DsmrController(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_3.OFP_VERSION]
 
     def __init__(self, *args, **kwargs):
-        super(ShortestPathWithFloodControl, self).__init__(*args, **kwargs)
+        super(DsmrController, self).__init__(*args, **kwargs)
         self.topology_api_app = self
         self.net = nx.DiGraph()
         self.mac_to_port = {} # will have key=dpid, val={otherDpid: port}
@@ -235,6 +235,7 @@ class ShortestPathWithFloodControl(app_manager.RyuApp):
     After this, it should act just as it did on startup.
     '''
     @set_ev_cls(event.EventSwitchEnter)
+    @set_ev_cls(event.EventSwitchLeave)
     def get_topology_data(self, ev):
         # clear graph
         self.net.clear()
