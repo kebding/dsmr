@@ -9,9 +9,8 @@ from mininet.node import RemoteController
 from mininet.link import TCLink
 
 ''' 
-launches a custom square topology that will have two routes from each node to
-any other node when using multipath_dijkstra due to the differences in
-delay and bandwidth across the links
+launches a custom square topology that will have two routes from s1 to s3 when
+using multipath_dijkstra due to the differences in bandwidth across the links
 # launch mininet with sudo mn --custom <topoFile> --topo <topo> --controller remote --switch ovsk,protocols=OpenFlow13 --link=tc
 '''
 class square_topo(Topo):
