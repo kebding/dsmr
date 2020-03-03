@@ -43,11 +43,16 @@ def multipath_dijkstra(G, src):
 
                 # check the neighbors of the node; queue undominated neighbors
                 for neighbor in G[node]:
-                    if len(dests[dst]) < 1 or \
-                            hopCount + 1 < dests[dst][-1][0] \
-                            or min(bw, G[node][neighbor]['bw']) > dests[dst][-1][1]:
-                        heappush(q, (hopCount + 1,
-                                min(bw, G[node][neighbor]['bw']), neighbor, path))
+                    try:
+                        if len(dests[dst]) < 1 or \
+                                hopCount + 1 < dests[dst][-1][0] \
+                                or min(bw, G[node][neighbor]['bw']) > dests[dst][-1][1]:
+                            heappush(q, (hopCount + 1,
+                                    min(bw, G[node][neighbor]['bw']), neighbor, path))
+                    except KeyError:
+                        # no bw found. do not use this link
+                        pass
+
                 # done checking neighbors for undominated paths
             # else if this path is dominated, pop the next entry from the queue
         # at this point the queue is empty. begin working on the next dst
