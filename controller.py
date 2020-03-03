@@ -80,11 +80,17 @@ class DsmrController(app_manager.RyuApp):
 
     def remove_all_flows(self, datapath):
         parser = datapath.ofproto_parser
+        ofproto = datapath.ofproto
         match_all = parser.OFPMatch()
-        instructions = []
-        delete_flows_mod = datapath.ofproto_parser.OFPFlowMod(datapath=datapath,
-                table_id=0, match=match_all, instructions=instructions)
+        delete_flows_mod = parser.OFPFlowMod(datapath=datapath,
+                table_id=0, match=match_all, command=ofproto.OFPFC_DELETE,
+                out_port=ofproto.OFPP_ANY, out_group=ofproto.OFPG_ANY)
         datapath.send_msg(delete_flows_mod)
+        # now re-add the table-miss flow entry
+        actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
+                                          ofproto.OFPCML_NO_BUFFER)]
+        self.add_flow(datapath, 0, match=match_all, actions=actions)
+
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in_handler(self, ev):
@@ -237,8 +243,9 @@ class DsmrController(app_manager.RyuApp):
     @set_ev_cls(event.EventSwitchEnter)
     @set_ev_cls(event.EventSwitchLeave)
     def get_topology_data(self, ev):
-        # clear graph
+        # clear graph and precomputed paths
         self.net.clear()
+        self.paths = {}
 
         # wait a moment for ryu's topology info to update
         sleep(0.005)
@@ -251,10 +258,8 @@ class DsmrController(app_manager.RyuApp):
                 for link in links_list]
 
         # remove all the flows in the switches
-        '''
         for switch in switch_list:
             self.remove_all_flows(switch.dp)
-        '''
 
         # add switches and links to graph
         self.net.add_nodes_from(switches)
