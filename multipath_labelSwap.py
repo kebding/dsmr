@@ -34,8 +34,8 @@ def multipath_dijkstra(G, src):
             if len(dests[dst]) < 1 or \
                     hopCount < dests[dst][-1][0] or bw > dests[dst][-1][1]:
                 # append the node to the path
-                nodeTup = (node,)
-                path = path + nodeTup
+                node_tup = (node,)
+                path += node_tup
                 # if the node is the dst, get the NH path
                 if node == dst:
                     dests[dst].append((hopCount, bw, path))
@@ -81,38 +81,56 @@ def compute_mpls_labels(graph):
 
     # now add labels to each path
     for src, dstsDict in paths.items():
-        # labels 0-15 are reserved, so start at 16
-        label = 16
+        # labels 0-15 are reserved, so start at a higher number
+        label = 1000
+        arp_label = 100
         for dst, pathsList in dstsDict.items():
+            arp_path = None  # record the shortest path
             for path in range(len(pathsList)):
+                if arp_path is None or \
+                        paths[src][dst][path][0] < arp_path[0]:
+                    arp_path = paths[src][dst][path]
                 # if there isn't already a label for the path, assign one
                 if len(paths[src][dst][path]) < 4:
-                    labelTup = (label,)
-                    paths[src][dst][path] = \
-                            paths[src][dst][path] + labelTup
+                    label_tup = (label,)
+                    paths[src][dst][path] +=  label_tup
                     label += 1
+            # add the ARP unicast path
+            if arp_path is None:
+                # no paths, so skip
+                continue
+            arp_label_tup = (arp_label,)
+            arp_path += arp_label_tup
+            paths[src][dst].append(arp_path)
+            arp_label += 1
+
     # now compute the Next Hop Labels (NH Label or NHL)
     # find a path to the NH to get the metrics to it. check the total
     # path metrics to determine if the NH's path is the same as src's path
     for src, dstsDict in paths.items():
         for dst, pathsList in dstsDict.items():
-            if src == dst:
-                # assign NHL = label and append NHL to path tuple
-                paths[src][dst][path] += (paths[src][dst][path][3],)
-                continue
-            # else
             for path in range(len(pathsList)):
-                NH = paths[src][dst][path][2][1]
                 NHL = -1  # placeholder
-                # find matching path in NH's paths list
-                for NHpath in paths[NH][dst]:
-                    if NHpath[2] == paths[src][dst][path][2][1:]:
-                        NHL = NHpath[3]
-                        break
+                if src == dst:
+                    NHL = paths[src][dst][path][3]
+                else:
+                    NH = paths[src][dst][path][2][1]
+                    # find matching path in NH's paths list
+                    for NHpath in paths[NH][dst]:
+                        if NHpath[2] == paths[src][dst][path][2][1:] and \
+                                ((NHpath[3] >= 1000  and \
+                                    paths[src][dst][path][3] >= 1000) \
+                                or \
+                                NHpath[3] < 1000 and \
+                                    paths[src][dst][path][3] < 1000):
+                            NHL = NHpath[3]
+                            break
                 if NHL == -1:
                     print("error: no next hop label found\n")
                 NHLtup = (NHL,)
                 paths[src][dst][path] += NHLtup
+
+
 
     return paths
 
@@ -141,14 +159,17 @@ def print_mpls_labels(paths):
         print("for node " + str(node) +":")
         for dst, pathsList in dstsDict.items():
             for path in range(len(pathsList)):
-                print("dst=%s, label=%d, path=%s, NHL=%d, hopCount=%d, bw=%.2f" %
-                        (dst, paths[node][dst][path][3],
-                            paths[node][dst][path][2],
-                            paths[node][dst][path][4],
-                            paths[node][dst][path][0],
-                            paths[node][dst][path][1]
+                try:
+                    print("dst=%s, label=%d, path=%s, NHL=%d, hopCount=%d, bw=%.2f" %
+                            (dst, paths[node][dst][path][3],
+                                paths[node][dst][path][2],
+                                paths[node][dst][path][4],
+                                paths[node][dst][path][0],
+                                paths[node][dst][path][1]
+                            )
                         )
-                    )
+                except IndexError as ie:
+                    print(ie)
 
 
 if __name__ == "__main__":

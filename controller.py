@@ -190,7 +190,7 @@ class DsmrController(app_manager.RyuApp):
                                      (src, dpid)])
             # add these flows to forward packets to the host
             match = parser.OFPMatch(eth_dst=src)
-            actions = [parser.OFPActionOutput(in_port), parser.OFPActionOutput(ofproto.OFPP_CONTROLLER)]
+            actions = [parser.OFPActionOutput(in_port)]
             instructions = [parser.OFPInstructionActions(
                     ofproto.OFPIT_APPLY_ACTIONS, actions)]
             self.add_flow(datapath, 4, match, instructions,
@@ -207,45 +207,45 @@ class DsmrController(app_manager.RyuApp):
 
         # handle broadcast messages
         if dst == "ff:ff:ff:ff:ff:ff":
-            print("broadcast message. setting actions=flood\n")
             actions = [parser.OFPActionOutput(out_port)]
 
         # handle cases of unicast messages new to the network
         elif eth.ethertype != ether_types.ETH_TYPE_MPLS:
-            print("message new to the mpls network\n")
             # check if src and dst are connected to same switch
             try:
                 out_port = self.net[dpid][dst]['port']
-                #actions = [parser.OFPActionOutput(out_port)]
-                actions = [parser.OFPActionOutput(in_port), parser.OFPActionOutput(ofproto.OFPP_CONTROLLER)]
+                actions = [parser.OFPActionOutput(out_port)]
             # otherwise, find the switch connected to dst
             except:
                 # assume hosts each have only 1 link and that it is to a switch
                 if dst in self.net and len(self.net[dst].keys()) > 0:
-                    print("dst in self.net and has at least one link")
                     dst_switch = list(self.net[dst].keys())[0]
                 # if dst_switch exists and this switch has at least one path to
                 # it, use the first path in the list ################# (FOR NOW)
                 if dst_switch is not None and dst_switch in self.labels[dpid] \
                         and len(self.labels[dpid][dst_switch]) > 0:
-                    next_hop_label = self.labels[dpid][dst_switch][0][4]
                     # get the next switch to send the packet to. if the path has
                     # only one switch in it (this switch) and this wasn't caught
                     # above, handle it gracefully
-                    try:
-                        next_hop = self.labels[dpid][dst_switch][0][2][1]
-                    except IndexError:
-                        next_hop = self.labels[dpid][dst_switch][0][2][0]
+                    for path in range(len(self.labels[dpid][dst_switch])):
+                        # find the matching path for the incoming label
+                        if (self.labels[dpid][dst_switch][path][3] >= 1000 and \
+                                eth.ethertype != ether_types.ETH_TYPE_ARP) \
+                                or \
+                                (self.labels[dpid][dst_switch][path][3] < 1000 and \
+                                 eth.ethertype == ether_types.ETH_TYPE_ARP):
+                            try:
+                                next_hop = self.labels[dpid][dst_switch][path][2][1]
+                            except IndexError:
+                                next_hop = self.labels[dpid][dst_switch][path][2][0]
+                            next_hop_label = self.labels[dpid][dst_switch][path][4]
+                            break
                     out_port = self.net[dpid][next_hop]['port']
-                    actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER),
-                               parser.OFPActionPushMpls(),
+                    actions = [parser.OFPActionPushMpls(),
                                parser.OFPActionSetField(
                                    mpls_label=next_hop_label),
-                               parser.OFPActionSetMplsTtl(self.mpls_ttl),
                                parser.OFPActionOutput(out_port)
                               ]
-                    #print("dst={}\ndst_switch={}\nnext_hop={}\nnext_hop_label={}\nout_port={}\nactions={}".format(
-                    #    dst, dst_switch, next_hop, next_hop_label, out_port, actions))
                 # if dst_switch is not known, flood the packet
                 else:
                     actions = [parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
@@ -255,7 +255,7 @@ class DsmrController(app_manager.RyuApp):
                 ofproto.OFPIT_APPLY_ACTIONS, actions)]
         # install a flow to avoid packet_in next time (if dst is known)
         if dst in self.net and dst_switch is not None:
-            match = parser.OFPMatch(eth_dst=dst)
+            match = parser.OFPMatch(eth_dst=dst, eth_type=eth.ethertype)
             # verify if we have a valid buffer_id; if yes, send both flow_mod
             # and packet_out; else only send flow mod
             if msg.buffer_id != ofproto.OFP_NO_BUFFER:
@@ -372,9 +372,13 @@ class DsmrController(app_manager.RyuApp):
                             mpls_label=self.labels[switch_id][dst][path][3])
                     # determine actions the switch_id should take
                     if switch_id == dst:
-                        # create
-                        actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER),
-                                   parser.OFPActionPopMpls()]
+                        # check if this is the ARP path or not
+                        if self.labels[switch_id][dst][path][3] < 1000:
+                            packet_ethertype = ether_types.ETH_TYPE_ARP
+                        else:
+                            packet_ethertype = ether_types.ETH_TYPE_IP
+                        # create an instruction to pop the MPLS header
+                        actions = [parser.OFPActionPopMpls(packet_ethertype)]
                         # create an instruction to go to the next table
                         table_instruction = parser.OFPInstructionGotoTable(
                                        self.mpls_dst_table_id)
@@ -386,8 +390,7 @@ class DsmrController(app_manager.RyuApp):
                         next_hop = self.labels[switch_id][dst][path][2][1]
                         next_hop_label = self.labels[switch_id][dst][path][4]
                         out_port = self.net[switch_id][next_hop]['port']
-                        actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER),
-                                    parser.OFPActionSetField(
+                        actions = [parser.OFPActionSetField(
                                         mpls_label = next_hop_label),
                                     parser.OFPActionDecMplsTtl(),
                                     parser.OFPActionOutput(out_port)
