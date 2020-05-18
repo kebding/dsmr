@@ -12,7 +12,7 @@ from ryu.controller import ofp_event
 from ryu.controller.handler import MAIN_DISPATCHER, CONFIG_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
-from ryu.lib.packet import packet, ethernet, ether_types
+from ryu.lib.packet import packet, ethernet, ether_types, mpls, arp
 from ryu.topology import event, switches
 from ryu.topology.api import get_switch, get_link
 import networkx as nx
@@ -26,16 +26,24 @@ class DsmrController(app_manager.RyuApp):
         super(DsmrController, self).__init__(*args, **kwargs)
         self.topology_api_app = self
         self.net = nx.DiGraph()
-        self.mac_to_port = {} # will have key=dpid, val={otherDpid: port}
+        self.default_table_id = 0
+        self.mac_to_port = {} # will have key=dpid, val={host: dpid_port}
+        self.mpls_dst_table_id = 1
+        self.mpls_ttl = 16
         self.mcast_mask = '01:00:00:00:00:00'
-        self.paths = {} # will have key=dst, val=[list of paths to dst]
-        self.labels = {}    # will contain info on mpls labels
+        self.labels = {} # see multipath_labelSwap for info
+        self.switch_ofprotos = {}
+        self.switch_parsers = {}
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
         datapath = ev.msg.datapath
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
+
+        # record the switch's ofproto for use later
+        self.switch_ofprotos[datapath.id] = ofproto
+        self.switch_parsers[datapath.id] = parser
 
         # install table-miss flow entry
         #
@@ -47,7 +55,10 @@ class DsmrController(app_manager.RyuApp):
         match = parser.OFPMatch()
         actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
                                           ofproto.OFPCML_NO_BUFFER)]
-        self.add_flow(datapath, 0, match, actions)
+        instructions = [parser.OFPInstructionActions(
+                ofproto.OFPIT_APPLY_ACTIONS, actions)]
+        self.add_flow(datapath, 0, match, instructions, self.default_table_id)
+        self.add_flow(datapath, 0, match, instructions, self.mpls_dst_table_id)
 
     def print_graph(self):
         # print graph for reference
@@ -59,37 +70,46 @@ class DsmrController(app_manager.RyuApp):
         # print labels for reference
         print_mpls_labels(self.labels)
 
-    def add_flow(self, datapath, priority, match, actions, buffer_id=None, idle_timeout=None):
+    def add_flow(self, datapath, priority, match, instructions, table_id=0,
+            buffer_id=None, idle_timeout=None):
+        #print("ADD FLOW")
+        #print("datapath={}\npriority={}\nmatch={}\ninstructions={}\ntable_id={}\n".format(
+        #    datapath.id, priority, match, instructions, table_id))
         ofproto = datapath.ofproto
         parser = datapath.ofproto_parser
 
-        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,
-                                             actions)]
         if buffer_id:
             mod = parser.OFPFlowMod(datapath=datapath, buffer_id=buffer_id,
                                     priority=priority, match=match,
-                                    instructions=inst)
+                                    table_id=table_id, instructions=instructions)
         elif idle_timeout:
             mod = parser.OFPFlowMod(datapath=datapath, priority=priority,
-                                    match=match, instructions=inst,
+                                    match=match, table_id=table_id,
+                                    instructions=instructions,
                                     idle_timeout=idle_timeout)
         else:
             mod = parser.OFPFlowMod(datapath=datapath, priority=priority,
-                                    match=match, instructions=inst)
+                                    match=match, table_id=table_id,
+                                    instructions=instructions)
         datapath.send_msg(mod)
 
-    def remove_all_flows(self, datapath):
+    # This function removes all flows from the default table, which contains
+    # all flows except the mac-to-port mapping flows for the final hop of a path
+    def remove_flows(self, datapath):
         parser = datapath.ofproto_parser
         ofproto = datapath.ofproto
         match_all = parser.OFPMatch()
         delete_flows_mod = parser.OFPFlowMod(datapath=datapath,
-                table_id=0, match=match_all, command=ofproto.OFPFC_DELETE,
-                out_port=ofproto.OFPP_ANY, out_group=ofproto.OFPG_ANY)
+                table_id=self.default_table_id, match=match_all,
+                command=ofproto.OFPFC_DELETE, out_port=ofproto.OFPP_ANY,
+                out_group=ofproto.OFPG_ANY)
         datapath.send_msg(delete_flows_mod)
         # now re-add the table-miss flow entry
         actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER,
                                           ofproto.OFPCML_NO_BUFFER)]
-        self.add_flow(datapath, 0, match=match_all, actions=actions)
+        instructions = [parser.OFPInstructionActions(
+                ofproto.OFPIT_APPLY_ACTIONS, actions)]
+        self.add_flow(datapath, 0, match_all, instructions, self.default_table_id)
 
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
@@ -118,94 +138,134 @@ class DsmrController(app_manager.RyuApp):
         # if this dp has not been seen before, add an entry
         self.mac_to_port.setdefault(dpid, {})
 
-        # log packet if dst is not IPv6 multicast
-        '''
-        if dst[0:6] != "33:33:":
-            self.logger.info("packet in %s %s %s %s", dpid, src, dst, in_port)
-        '''
+        # log packet
+        if msg.reason == ofproto.OFPR_NO_MATCH:
+            reason = 'NO MATCH'
+        elif msg.reason == ofproto.OFPR_ACTION:
+            reason = 'ACTION'
+        elif msg.reason == ofproto.OFPR_INVALID_TTL:
+            reason = 'INVALID TTL'
+        else:
+            reason = 'unknown'
+        self.logger.info("packet in: dpid=%s src=%s dst=%s in_port=%d " + \
+                "ethertype=%s table_id=%d, reason=%s",
+                dpid, src, dst, in_port, hex(eth.ethertype), msg.table_id, reason)
 
+        if eth.ethertype == ether_types.ETH_TYPE_MPLS:
+            packet_mpls = pkt.get_protocol(mpls.mpls)
+            self.logger.info("mpls_label = %s, mpls_TTL = %s",
+                    packet_mpls.label, packet_mpls.ttl)
+        # if sent to controller just to log, return now
+        if msg.reason == ofproto.OFPR_ACTION:
+            return
+
+        # if this is the first time receiving a packet from the source,
+        # add it to the controller's view of the topology
         if src not in self.mac_to_port[dpid]:
             self.mac_to_port[dpid][src] = in_port
-            # if this is the first time receiving a packet from the source,
-            # add a flow with high priority to flood multicast traffic from
+            # add a flow with medium priority to flood multicast traffic from
             # this src on this port
             out_port = ofproto.OFPP_FLOOD
             actions = [parser.OFPActionOutput(out_port)]
+            instructions = [parser.OFPInstructionActions(
+                    ofproto.OFPIT_APPLY_ACTIONS, actions)]
             # using a tuple for eth_dst creates a masked match field for dst
             match = parser.OFPMatch(in_port=in_port, eth_src=src,
                     eth_dst=(self.mcast_mask, self.mcast_mask))
-            self.add_flow(datapath, 1024, match, actions)
+            self.add_flow(datapath, 500, match, instructions,
+                    self.default_table_id)
 
             # add flow to block multicast traffic on every port to prevent network loops
-            # (this won't block the origin port because it has a lower priority match)
+            # (this won't block the origin port because this has a lower priority match)
             blockActions = [];
             blockMatch = parser.OFPMatch(eth_src=src,
                     eth_dst=(self.mcast_mask, self.mcast_mask))
-            self.add_flow(datapath, 8, blockMatch, blockActions)
+            self.add_flow(datapath, 8, blockMatch, blockActions,
+                    self.default_table_id)
 
         if src not in self.net:
             self.net.add_node(src)
             # self.net is a directed graph, so two links are needed
             self.net.add_edges_from([(dpid, src, {'port':in_port}),
-                (src, dpid)])
+                                     (src, dpid)])
+            # add these flows to forward packets to the host
+            match = parser.OFPMatch(eth_dst=src)
+            actions = [parser.OFPActionOutput(in_port), parser.OFPActionOutput(ofproto.OFPP_CONTROLLER)]
+            instructions = [parser.OFPInstructionActions(
+                    ofproto.OFPIT_APPLY_ACTIONS, actions)]
+            self.add_flow(datapath, 4, match, instructions,
+                    self.default_table_id)
+            self.add_flow(datapath, 4, match, instructions,
+                    self.mpls_dst_table_id)
+
             # print graph for reference
-            self.print_graph
+            self.print_graph()
 
         out_port = ofproto.OFPP_FLOOD   # default
-        # check if there's already a path to this dest with this dp in it
-        if dst in self.paths:
-            self.logger.info("dst %s in self.paths", dst)
-            for path in self.paths[dst]:
-                if dpid in path:
-                    nextHop = path[path.index(dpid) + 1]
-                    out_port = self.net[dpid][nextHop]['port']
-                    #'''
-                    self.logger.info("pre-computed path found from %s to %s. path = %s", \
-                            dpid, dst, path)
-                    #'''
-                    break
+        table_id = self.default_table_id
+        dst_switch = None
 
-        if out_port == ofproto.OFPP_FLOOD and dst in self.net:
-        # if no precomputed path found, try computing a path
-            self.logger.info("dst %s not in self.paths or no computed path " + \
-                    "found, but dst in self.net", dst)
-            # try routing. if no route found, flood it
+        # handle broadcast messages
+        if dst == "ff:ff:ff:ff:ff:ff":
+            print("broadcast message. setting actions=flood\n")
+            actions = [parser.OFPActionOutput(out_port)]
+
+        # handle cases of unicast messages new to the network
+        elif eth.ethertype != ether_types.ETH_TYPE_MPLS:
+            print("message new to the mpls network\n")
+            # check if src and dst are connected to same switch
             try:
-                path = nx.shortest_path(self.net, dpid, dst)
-                nextHop = path[path.index(dpid) + 1]
-                out_port = self.net[dpid][nextHop]['port']
-                #'''
-                self.logger.info("path found from %s to %s. path = %s", \
-                        dpid, dst, ''.join(str(foo)+' ' for foo in path))
-                #'''
-                # add this path to the paths dict
-                self.paths.setdefault(dst, [])
-                self.paths[dst].append(path)
+                out_port = self.net[dpid][dst]['port']
+                #actions = [parser.OFPActionOutput(out_port)]
+                actions = [parser.OFPActionOutput(in_port), parser.OFPActionOutput(ofproto.OFPP_CONTROLLER)]
+            # otherwise, find the switch connected to dst
+            except:
+                # assume hosts each have only 1 link and that it is to a switch
+                if dst in self.net and len(self.net[dst].keys()) > 0:
+                    print("dst in self.net and has at least one link")
+                    dst_switch = list(self.net[dst].keys())[0]
+                # if dst_switch exists and this switch has at least one path to
+                # it, use the first path in the list ################# (FOR NOW)
+                if dst_switch is not None and dst_switch in self.labels[dpid] \
+                        and len(self.labels[dpid][dst_switch]) > 0:
+                    next_hop_label = self.labels[dpid][dst_switch][0][4]
+                    # get the next switch to send the packet to. if the path has
+                    # only one switch in it (this switch) and this wasn't caught
+                    # above, handle it gracefully
+                    try:
+                        next_hop = self.labels[dpid][dst_switch][0][2][1]
+                    except IndexError:
+                        next_hop = self.labels[dpid][dst_switch][0][2][0]
+                    out_port = self.net[dpid][next_hop]['port']
+                    actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER),
+                               parser.OFPActionPushMpls(),
+                               parser.OFPActionSetField(
+                                   mpls_label=next_hop_label),
+                               parser.OFPActionSetMplsTtl(self.mpls_ttl),
+                               parser.OFPActionOutput(out_port)
+                              ]
+                    #print("dst={}\ndst_switch={}\nnext_hop={}\nnext_hop_label={}\nout_port={}\nactions={}".format(
+                    #    dst, dst_switch, next_hop, next_hop_label, out_port, actions))
+                # if dst_switch is not known, flood the packet
+                else:
+                    actions = [parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
 
-            except nx.NetworkXNoPath:
-                #'''
-                self.logger.info("no path found from %s to %s. flooding", \
-                        src, dst)
-                #'''
-                out_port = ofproto.OFPP_FLOOD
-        '''
-        if out_port == ofproto.OFPP_FLOOD:   # no route found. flood the packet
-            self.logger.info("dst %s not in self.net or no path found", dst)
-            out_port = ofproto.OFPP_FLOOD
-        '''
 
-        actions = [parser.OFPActionOutput(out_port)]
-
-        # install a flow to avoid packet_in next time (if not flooding)
-        if out_port != ofproto.OFPP_FLOOD:
+        instructions = [parser.OFPInstructionActions(
+                ofproto.OFPIT_APPLY_ACTIONS, actions)]
+        # install a flow to avoid packet_in next time (if dst is known)
+        if dst in self.net and dst_switch is not None:
             match = parser.OFPMatch(eth_dst=dst)
             # verify if we have a valid buffer_id; if yes, send both flow_mod
             # and packet_out; else only send flow mod
             if msg.buffer_id != ofproto.OFP_NO_BUFFER:
-                self.add_flow(datapath, 1, match, actions, msg.buffer_id)
+                self.add_flow(datapath, 1, match, instructions,
+                        table_id, msg.buffer_id)
                 return
             else:
-                self.add_flow(datapath, 1, match, actions)
+                self.add_flow(datapath, 1, match, instructions,
+                        table_id)
+        # send the packet if dst is unknown or the packet wasn't buffered
         data = None
         if msg.buffer_id == ofproto.OFP_NO_BUFFER:
             data = msg.data
@@ -242,13 +302,13 @@ class DsmrController(app_manager.RyuApp):
     '''
     @set_ev_cls(event.EventSwitchEnter)
     @set_ev_cls(event.EventSwitchLeave)
-    def get_topology_data(self, ev):
+    def update_topology(self, ev):
         # clear graph and precomputed paths
         self.net.clear()
-        self.paths = {}
+        self.labels = {}
 
         # wait a moment for ryu's topology info to update
-        sleep(0.005)
+        sleep(0.05)
 
         # get switches and links from ryu.topology
         switch_list = get_switch(self.topology_api_app, None)
@@ -259,7 +319,7 @@ class DsmrController(app_manager.RyuApp):
 
         # remove all the flows in the switches
         for switch in switch_list:
-            self.remove_all_flows(switch.dp)
+            self.remove_flows(switch.dp)
 
         # add switches and links to graph
         self.net.add_nodes_from(switches)
@@ -300,6 +360,45 @@ class DsmrController(app_manager.RyuApp):
         #self.logger.info("calculating labels")
         self.labels = compute_mpls_labels(self.net)
 
+        # add label-swapping flows to the switches
+	for switch in switch_list:
+            switch_id = switch.dp.id
+            ofproto = self.switch_ofprotos[switch_id]
+            parser = self.switch_parsers[switch_id]
+            for dst in self.labels[switch_id].keys():
+                for path in range(len(self.labels[switch_id][dst])):
+                    # create a match for the path using its label
+                    match = parser.OFPMatch(eth_type=ether_types.ETH_TYPE_MPLS,
+                            mpls_label=self.labels[switch_id][dst][path][3])
+                    # determine actions the switch_id should take
+                    if switch_id == dst:
+                        # create
+                        actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER),
+                                   parser.OFPActionPopMpls()]
+                        # create an instruction to go to the next table
+                        table_instruction = parser.OFPInstructionGotoTable(
+                                       self.mpls_dst_table_id)
+                        instructions = [parser.OFPInstructionActions(
+                                ofproto.OFPIT_APPLY_ACTIONS, actions),
+                                table_instruction]
+
+                    else:
+                        next_hop = self.labels[switch_id][dst][path][2][1]
+                        next_hop_label = self.labels[switch_id][dst][path][4]
+                        out_port = self.net[switch_id][next_hop]['port']
+                        actions = [parser.OFPActionOutput(ofproto.OFPP_CONTROLLER),
+                                    parser.OFPActionSetField(
+                                        mpls_label = next_hop_label),
+                                    parser.OFPActionDecMplsTtl(),
+                                    parser.OFPActionOutput(out_port)
+                                  ]
+                        instructions = [parser.OFPInstructionActions(
+                                ofproto.OFPIT_APPLY_ACTIONS, actions)]
+
+                    # now add the flow
+                    self.add_flow(switch.dp, 1200, match, instructions,
+                            self.default_table_id)
         self.print_graph()
         self.print_labels()
         print("")
+
