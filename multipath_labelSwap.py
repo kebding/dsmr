@@ -81,7 +81,8 @@ def compute_mpls_labels(graph):
 
     # now add labels to each path
     for src, dstsDict in paths.items():
-        label = 1
+        # labels 0-15 are reserved, so start at 16
+        label = 16
         for dst, pathsList in dstsDict.items():
             for path in range(len(pathsList)):
                 # if there isn't already a label for the path, assign one
