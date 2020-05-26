@@ -255,15 +255,17 @@ class DsmrController(app_manager.RyuApp):
                 ofproto.OFPIT_APPLY_ACTIONS, actions)]
         # install a flow to avoid packet_in next time (if dst is known)
         if dst in self.net and dst_switch is not None:
+            priority = 1
             match = parser.OFPMatch(eth_dst=dst, eth_type=eth.ethertype)
+
             # verify if we have a valid buffer_id; if yes, send both flow_mod
             # and packet_out; else only send flow mod
             if msg.buffer_id != ofproto.OFP_NO_BUFFER:
-                self.add_flow(datapath, 1, match, instructions,
+                self.add_flow(datapath, priority, match, instructions,
                         table_id, msg.buffer_id)
                 return
             else:
-                self.add_flow(datapath, 1, match, instructions,
+                self.add_flow(datapath, priority, match, instructions,
                         table_id)
         # send the packet if dst is unknown or the packet wasn't buffered
         data = None
@@ -306,6 +308,7 @@ class DsmrController(app_manager.RyuApp):
         # clear graph and precomputed paths
         self.net.clear()
         self.labels = {}
+        self.mac_to_port = {}
 
         # wait a moment for ryu's topology info to update
         sleep(0.05)
