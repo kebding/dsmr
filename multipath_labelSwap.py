@@ -67,6 +67,9 @@ def multipath_dijkstra(G, src):
                     if path[0] <= otherPath[0] and path[1] >= otherPath[1]:
                         paths.remove(otherPath)
 
+    # sort the paths to each node by their cop counts
+    for paths in dests.values():
+        paths.sort(key=lambda path: path[0])
 
     return dests
 
