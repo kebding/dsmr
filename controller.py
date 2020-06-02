@@ -12,7 +12,7 @@ from ryu.controller import ofp_event
 from ryu.controller.handler import MAIN_DISPATCHER, CONFIG_DISPATCHER
 from ryu.controller.handler import set_ev_cls
 from ryu.ofproto import ofproto_v1_3
-from ryu.lib.packet import packet, ethernet, ether_types, mpls, arp
+from ryu.lib.packet import packet, ethernet, ether_types, mpls, in_proto, ipv4, tcp, udp
 from ryu.topology import event, switches
 from ryu.topology.api import get_switch, get_link
 import networkx as nx
@@ -34,6 +34,7 @@ class DsmrController(app_manager.RyuApp):
         self.labels = {} # see multipath_labelSwap for info
         self.switch_ofprotos = {}
         self.switch_parsers = {}
+        self.bw_ports = [5002]
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def switch_features_handler(self, ev):
@@ -182,7 +183,6 @@ class DsmrController(app_manager.RyuApp):
                     eth_dst=(self.mcast_mask, self.mcast_mask))
             self.add_flow(datapath, 8, blockMatch, blockActions,
                     self.default_table_id)
-
         if src not in self.net:
             self.net.add_node(src)
             # self.net is a directed graph, so two links are needed
@@ -204,36 +204,82 @@ class DsmrController(app_manager.RyuApp):
         out_port = ofproto.OFPP_FLOOD   # default
         table_id = self.default_table_id
         dst_switch = None
+        msg_actions = None
 
         # handle broadcast messages
         if dst == "ff:ff:ff:ff:ff:ff":
-            actions = [parser.OFPActionOutput(out_port)]
+            msg_actions = [parser.OFPActionOutput(out_port)]
 
         # handle cases of unicast messages new to the network
         elif eth.ethertype != ether_types.ETH_TYPE_MPLS:
-            # check if src and dst are connected to same switch
-            try:
-                out_port = self.net[dpid][dst]['port']
-                actions = [parser.OFPActionOutput(out_port)]
-            # otherwise, find the switch connected to dst
-            except:
-                # assume hosts each have only 1 link and that it is to a switch
-                if dst in self.net and len(self.net[dst].keys()) > 0:
-                    dst_switch = list(self.net[dst].keys())[0]
-                # if dst_switch exists and this switch has at least one path to
-                # it, use the first path in the list ################# (FOR NOW)
-                if dst_switch is not None and dst_switch in self.labels[dpid] \
-                        and len(self.labels[dpid][dst_switch]) > 0:
-                    # get the next switch to send the packet to. if the path has
-                    # only one switch in it (this switch) and this wasn't caught
-                    # above, handle it gracefully
-                    for path in range(len(self.labels[dpid][dst_switch])):
-                        # find the matching path for the incoming label
-                        if (self.labels[dpid][dst_switch][path][3] >= 1000 and \
-                                eth.ethertype != ether_types.ETH_TYPE_ARP) \
-                                or \
-                                (self.labels[dpid][dst_switch][path][3] < 1000 and \
-                                 eth.ethertype == ether_types.ETH_TYPE_ARP):
+            # get the switch connected to dst.
+            # assumes hosts each have only 1 link and that it is to a switch
+            if dst in self.net and len(self.net[dst].keys()) > 0:
+                dst_switch = list(self.net[dst].keys())[0]
+
+            if dst_switch is not None and dst_switch in self.labels[dpid] \
+                    and len(self.labels[dpid][dst_switch]) > 0:
+                # since dst is known, install flows to avoid future packet_ins
+                table_id = self.default_table_id
+                # match for ARP unicast
+                priority = 1
+                match = parser.OFPMatch(eth_dst=dst,
+                        eth_type=ether_types.ETH_TYPE_ARP)
+                # get ARP instructions
+                for path in range(len(self.labels[dpid][dst_switch])):
+                    if self.labels[dpid][dst_switch][path][3] < 1000:
+                        try:
+                            next_hop = self.labels[dpid][dst_switch][path][2][1]
+                        except IndexError:
+                            next_hop = self.labels[dpid][dst_switch][path][2][0]
+                        next_hop_label = self.labels[dpid][dst_switch][path][4]
+                        break
+                out_port = self.net[dpid][next_hop]['port']
+                actions = [parser.OFPActionPushMpls(),
+                           parser.OFPActionSetField(
+                               mpls_label=next_hop_label),
+                           parser.OFPActionOutput(out_port)
+                          ]
+                instructions = [parser.OFPInstructionActions(
+                        ofproto.OFPIT_APPLY_ACTIONS, actions)]
+                self.add_flow(datapath, priority, match, instructions, table_id)
+                if eth.ethertype == ether_types.ETH_TYPE_ARP:
+                    msg_actions = actions
+
+                # match for non-ARP unicast that doesn't prioritizes latency
+                priority = 2
+                match = parser.OFPMatch(eth_dst=dst,
+                        eth_type=ether_types.ETH_TYPE_IP)
+                # get instructions for non-ARP unicast that prioritizes latency
+                for path in range(len(self.labels[dpid][dst_switch])):
+                    if self.labels[dpid][dst_switch][path][3] >= 1000:
+                        try:
+                            next_hop = self.labels[dpid][dst_switch][path][2][1]
+                        except IndexError:
+                            next_hop = self.labels[dpid][dst_switch][path][2][0]
+                        next_hop_label = self.labels[dpid][dst_switch][path][4]
+                        break
+                out_port = self.net[dpid][next_hop]['port']
+                actions = [parser.OFPActionPushMpls(),
+                           parser.OFPActionSetField(
+                               mpls_label=next_hop_label),
+                           parser.OFPActionOutput(out_port)
+                          ]
+                instructions = [parser.OFPInstructionActions(
+                        ofproto.OFPIT_APPLY_ACTIONS, actions)]
+                self.add_flow(datapath, priority, match, instructions, table_id)
+                if eth.ethertype == ether_types.ETH_TYPE_IP:
+                    msg_actions = actions
+
+                # match for non-ARP unicast traffic that prioritizes bandwidth
+                priority = 3
+                for port in self.bw_ports:
+                    next_hop = None
+                    next_hop_label = None
+                    # get instructions for non-ARP unicast that prioritizes bandwidth
+                    for path in range(
+                            len(self.labels[dpid][dst_switch])-1, -1, -1):
+                        if self.labels[dpid][dst_switch][path][3] >= 1000:
                             try:
                                 next_hop = self.labels[dpid][dst_switch][path][2][1]
                             except IndexError:
@@ -246,34 +292,40 @@ class DsmrController(app_manager.RyuApp):
                                    mpls_label=next_hop_label),
                                parser.OFPActionOutput(out_port)
                               ]
-                # if dst_switch is not known, flood the packet
-                else:
-                    actions = [parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
+                    instructions = [parser.OFPInstructionActions(
+                            ofproto.OFPIT_APPLY_ACTIONS, actions)]
+                    # tcp match
+                    match = parser.OFPMatch(eth_dst=dst,
+                            eth_type=ether_types.ETH_TYPE_IP,
+                            ip_proto=in_proto.IPPROTO_TCP,
+                            tcp_dst=port)
+                    self.add_flow(datapath, priority, match, instructions, table_id)
+                    # udp match
+                    match = parser.OFPMatch(eth_dst=dst,
+                            eth_type=ether_types.ETH_TYPE_IP,
+                            ip_proto=in_proto.IPPROTO_UDP,
+                            udp_dst=port)
+                    self.add_flow(datapath, priority, match, instructions, table_id)
+                    if eth.ethertype == ether_types.ETH_TYPE_IP and \
+                            pkt.get_protocol(ipv4.ipv4) is not None and \
+                            (pkt.get_protocol(tcp.tcp) is not None or \
+                             pkt.get_protocol(udp.udp) is not None):
+                        msg_actions = actions
 
 
-        instructions = [parser.OFPInstructionActions(
-                ofproto.OFPIT_APPLY_ACTIONS, actions)]
-        # install a flow to avoid packet_in next time (if dst is known)
-        if dst in self.net and dst_switch is not None:
-            priority = 1
-            match = parser.OFPMatch(eth_dst=dst, eth_type=eth.ethertype)
+            # if dst_switch is not known, flood the packet
+            if dst not in self.net or dst_switch is None:
+                msg_actions = [parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
 
-            # verify if we have a valid buffer_id; if yes, send both flow_mod
-            # and packet_out; else only send flow mod
-            if msg.buffer_id != ofproto.OFP_NO_BUFFER:
-                self.add_flow(datapath, priority, match, instructions,
-                        table_id, msg.buffer_id)
-                return
-            else:
-                self.add_flow(datapath, priority, match, instructions,
-                        table_id)
-        # send the packet if dst is unknown or the packet wasn't buffered
+        if msg_actions is None:
+            msg_actions = [parser.OFPActionOutput(ofproto.OFPP_FLOOD)]
+
         data = None
         if msg.buffer_id == ofproto.OFP_NO_BUFFER:
             data = msg.data
 
         out = parser.OFPPacketOut(datapath=datapath, buffer_id=msg.buffer_id,
-                                  in_port=in_port, actions=actions, data=data)
+                                  in_port=in_port, actions=msg_actions, data=data)
 
         datapath.send_msg(out)
 
