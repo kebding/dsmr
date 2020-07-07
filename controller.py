@@ -16,7 +16,7 @@ from ryu.lib.packet import packet, ethernet, ether_types, mpls, in_proto, ipv4, 
 from ryu.topology import event, switches
 from ryu.topology.api import get_switch, get_link
 import networkx as nx
-from multipath_labelSwap import compute_mpls_labels, print_mpls_labels
+from routing_labels import compute_mpls_labels, print_mpls_labels
 from time import sleep
 
 class DsmrController(app_manager.RyuApp):

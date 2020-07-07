@@ -1,6 +1,6 @@
 '''
 Kyle Ebding
-multipath_labelSwap.py
+routing_labels.py
 
 This program takes an input edgelist as a command line argument, runs a
 modified version of Dijkstra's algorithm to find the set of best paths (defined
@@ -67,7 +67,7 @@ def multipath_dijkstra(G, src):
                     if path[0] <= otherPath[0] and path[1] >= otherPath[1]:
                         paths.remove(otherPath)
 
-    # sort the paths to each node by their cop counts
+    # sort the paths to each node by their hop counts
     for paths in dests.values():
         paths.sort(key=lambda path: path[0])
 
