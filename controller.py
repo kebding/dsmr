@@ -246,7 +246,7 @@ class DsmrController(app_manager.RyuApp):
                 if eth.ethertype == ether_types.ETH_TYPE_ARP:
                     msg_actions = actions
 
-                # match for non-ARP unicast that doesn't prioritizes latency
+                # match for non-ARP unicast that prioritizes latency
                 priority = 2
                 match = parser.OFPMatch(eth_dst=dst,
                         eth_type=ether_types.ETH_TYPE_IP)
