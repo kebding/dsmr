@@ -26,9 +26,10 @@ class DsmrController(app_manager.RyuApp):
         super(DsmrController, self).__init__(*args, **kwargs)
         self.topology_api_app = self
         self.net = nx.DiGraph()
-        self.default_table_id = 0
         self.mac_to_port = {} # will have key=dpid, val={host: dpid_port}
-        self.mpls_dst_table_id = 1
+        self.known_hosts_table = 0
+        self.routing_table = 1
+        self.mpls_dst_table = 2
         self.mpls_ttl = 16
         self.mcast_mask = '01:00:00:00:00:00'
         self.labels = {} # see multipath_labelSwap for info
@@ -46,7 +47,7 @@ class DsmrController(app_manager.RyuApp):
         self.switch_ofprotos[datapath.id] = ofproto
         self.switch_parsers[datapath.id] = parser
 
-        # install table-miss flow entry
+        # install table-miss flow entries
         #
         # We specify NO BUFFER to max_len of the output action due to
         # OVS bug. At this moment, if we specify a lesser number, e.g.,
@@ -58,8 +59,9 @@ class DsmrController(app_manager.RyuApp):
                                           ofproto.OFPCML_NO_BUFFER)]
         instructions = [parser.OFPInstructionActions(
                 ofproto.OFPIT_APPLY_ACTIONS, actions)]
-        self.add_flow(datapath, 0, match, instructions, self.default_table_id)
-        self.add_flow(datapath, 0, match, instructions, self.mpls_dst_table_id)
+        self.add_flow(datapath, 0, match, instructions, self.known_hosts_table)
+        self.add_flow(datapath, 0, match, instructions, self.routing_table)
+        self.add_flow(datapath, 0, match, instructions, self.mpls_dst_table)
 
     def print_graph(self):
         # print graph for reference
@@ -94,14 +96,14 @@ class DsmrController(app_manager.RyuApp):
                                     instructions=instructions)
         datapath.send_msg(mod)
 
-    # This function removes all flows from the default table, which contains
-    # all flows except the mac-to-port mapping flows for the final hop of a path
+    # This function clears the flow table containing routing flows, which will
+    # become obsolete on topology updates
     def remove_flows(self, datapath):
         parser = datapath.ofproto_parser
         ofproto = datapath.ofproto
         match_all = parser.OFPMatch()
         delete_flows_mod = parser.OFPFlowMod(datapath=datapath,
-                table_id=self.default_table_id, match=match_all,
+                table_id=self.routing_table, match=match_all,
                 command=ofproto.OFPFC_DELETE, out_port=ofproto.OFPP_ANY,
                 out_group=ofproto.OFPG_ANY)
         datapath.send_msg(delete_flows_mod)
@@ -110,7 +112,7 @@ class DsmrController(app_manager.RyuApp):
                                           ofproto.OFPCML_NO_BUFFER)]
         instructions = [parser.OFPInstructionActions(
                 ofproto.OFPIT_APPLY_ACTIONS, actions)]
-        self.add_flow(datapath, 0, match_all, instructions, self.default_table_id)
+        self.add_flow(datapath, 0, match_all, instructions, self.routing_table)
 
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
@@ -164,8 +166,15 @@ class DsmrController(app_manager.RyuApp):
         # add it to the controller's view of the topology
         if src not in self.mac_to_port[dpid]:
             self.mac_to_port[dpid][src] = in_port
-            # add a flow with medium priority to flood multicast traffic from
-            # this src on this port
+            # add a flow indicating the host is known and to forward the packet
+            match = parser.OFPMatch(eth_src=src)
+            table_instruction = [parser.OFPInstructionGotoTable(
+                           self.routing_table)]
+            self.add_flow(datapath, 1, match, table_instruction,
+                    self.known_hosts_table)
+
+            # add a flow to the routing table with medium priority to flood
+            # multicast traffic from this src on this ingress port
             out_port = ofproto.OFPP_FLOOD
             actions = [parser.OFPActionOutput(out_port)]
             instructions = [parser.OFPInstructionActions(
@@ -174,7 +183,7 @@ class DsmrController(app_manager.RyuApp):
             match = parser.OFPMatch(in_port=in_port, eth_src=src,
                     eth_dst=(self.mcast_mask, self.mcast_mask))
             self.add_flow(datapath, 500, match, instructions,
-                    self.default_table_id)
+                    self.routing_table)
 
             # add flow to block multicast traffic on every port to prevent network loops
             # (this won't block the origin port because this has a lower priority match)
@@ -182,7 +191,7 @@ class DsmrController(app_manager.RyuApp):
             blockMatch = parser.OFPMatch(eth_src=src,
                     eth_dst=(self.mcast_mask, self.mcast_mask))
             self.add_flow(datapath, 8, blockMatch, blockActions,
-                    self.default_table_id)
+                    self.routing_table)
         if src not in self.net:
             self.net.add_node(src)
             # self.net is a directed graph, so two links are needed
@@ -194,15 +203,15 @@ class DsmrController(app_manager.RyuApp):
             instructions = [parser.OFPInstructionActions(
                     ofproto.OFPIT_APPLY_ACTIONS, actions)]
             self.add_flow(datapath, 4, match, instructions,
-                    self.default_table_id)
+                    self.routing_table)
             self.add_flow(datapath, 4, match, instructions,
-                    self.mpls_dst_table_id)
+                    self.mpls_dst_table)
 
             # print graph for reference
             self.print_graph()
 
         out_port = ofproto.OFPP_FLOOD   # default
-        table_id = self.default_table_id
+        table_id = self.routing_table
         dst_switch = None
         msg_actions = None
 
@@ -220,7 +229,7 @@ class DsmrController(app_manager.RyuApp):
             if dst_switch is not None and dst_switch in self.labels[dpid] \
                     and len(self.labels[dpid][dst_switch]) > 0:
                 # since dst is known, install flows to avoid future packet_ins
-                table_id = self.default_table_id
+                table_id = self.routing_table
                 # match for ARP unicast
                 priority = 1
                 match = parser.OFPMatch(eth_dst=dst,
@@ -420,7 +429,7 @@ class DsmrController(app_manager.RyuApp):
                         actions = [parser.OFPActionPopMpls(packet_ethertype)]
                         # create an instruction to go to the next table
                         table_instruction = parser.OFPInstructionGotoTable(
-                                       self.mpls_dst_table_id)
+                                       self.mpls_dst_table)
                         instructions = [parser.OFPInstructionActions(
                                 ofproto.OFPIT_APPLY_ACTIONS, actions),
                                 table_instruction]
@@ -439,7 +448,7 @@ class DsmrController(app_manager.RyuApp):
 
                     # now add the flow
                     self.add_flow(switch.dp, 1200, match, instructions,
-                            self.default_table_id)
+                            self.routing_table)
         self.print_graph()
         self.print_labels()
         print("")
